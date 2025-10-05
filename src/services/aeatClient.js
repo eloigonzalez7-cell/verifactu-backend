@@ -15,7 +15,9 @@ export async function sendToAEAT(xml) {
         agent = new https.Agent({
           pfx: fs.readFileSync(process.env.CERT_PATH),
           passphrase: process.env.CERT_PASS,
-          rejectUnauthorized: false // AEAT test env usa certificados autofirmados
+          rejectUnauthorized: false,
+          minVersion: "TLSv1.2",
+          maxVersion: "TLSv1.2",
         });
       } else {
         console.warn("⚠️ CERT_PATH o CERT_PASS no definidos, enviando sin certificado");
