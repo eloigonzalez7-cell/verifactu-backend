@@ -8,10 +8,25 @@ import invoiceRoutes from "./routes/invoiceRoutes.js";
 
 const app = express();
 
-const allowedOrigin = process.env.FRONTEND_URL;
+// ✅ Lista de orígenes permitidos (localhost + GitHub Pages)
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://eloigonzalez7-cell.github.io",
+  "https://eloigonzalez7-cell.github.io/verifactu-poc"
+];
+
+// ✅ Configuración robusta de CORS
 app.use(
   cors({
-    origin: allowedOrigin ? [allowedOrigin] : undefined,
+    origin: (origin, callback) => {
+      // Permite solicitudes sin origen (como desde Postman o curl)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn("❌ CORS blocked for origin:", origin);
+        callback(new Error("CORS not allowed for this origin"));
+      }
+    },
     credentials: true
   })
 );
@@ -19,13 +34,15 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
+// ✅ Rutas principales
 app.use("/api", invoiceRoutes);
 
+// ✅ 404 fallback
 app.use((req, res) => {
   res.status(404).json({ status: "error", message: "Route not found" });
 });
 
-// eslint-disable-next-line no-unused-vars
+// ✅ Manejador global de errores
 app.use((err, req, res, next) => {
   const status = err.response?.status || 500;
   const message = err.response?.data || err.message || "Unexpected error";
@@ -39,5 +56,5 @@ app.use((err, req, res, next) => {
 
 const port = Number(process.env.PORT) || 4000;
 app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+  console.log(`✅ Server listening on port ${port}`);
 });
