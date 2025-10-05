@@ -1,9 +1,7 @@
 // Ruta del archivo: ./src/server.js
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import morgan from "morgan";
-
 import invoiceRoutes from "./routes/invoiceRoutes.js";
 
 const app = express();
@@ -11,49 +9,70 @@ const app = express();
 // ✅ Lista de orígenes permitidos (localhost + GitHub Pages)
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://eloigonzalez7-cell.github.io",
-  "https://eloigonzalez7-cell.github.io/verifactu-poc"
+  "https://eloigonzalez7-cell.github.io"
 ];
 
-// ✅ Configuración robusta de CORS
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Permite solicitudes sin origen (como desde Postman o curl)
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.warn("❌ CORS blocked for origin:", origin);
-        callback(new Error("CORS not allowed for this origin"));
-      }
-    },
-    credentials: true
-  })
-);
+// ✅ CORS manual (robusto y compatible con Render/Koyeb)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const isAllowed = !origin || allowedOrigins.some(o => origin.startsWith(o));
 
-app.use(express.json({ limit: "1mb" }));
+  if (isAllowed) {
+    res.header("Access-Control-Allow-Origin", origin || "*");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Allow-Credentials", "true");
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200); // Preflight OK
+    }
+
+    return next();
+  }
+
+  console.warn("❌ CORS blocked for origin:", origin);
+  return res.status(403).json({
+    status: "error",
+    message: "CORS not allowed for this origin",
+  });
+});
+
+// ✅ Middlewares
+app.use(express.json({ limit: "1mb" })); // Soporte JSON
+app.use(express.text({ type: ["application/xml", "text/xml", "text/plain"] })); // Soporte XML o texto
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+// ✅ Ruta raíz (mensaje satisfactorio)
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "🚀 VeriFactu Backend is running successfully on Render",
+    environment: process.env.NODE_ENV || "development",
+  });
+});
 
 // ✅ Rutas principales
 app.use("/api", invoiceRoutes);
 
 // ✅ 404 fallback
 app.use((req, res) => {
-  res.status(404).json({ status: "error", message: "Route not found" });
+  res.status(404).json({
+    status: "error",
+    message: "Route not found",
+    path: req.originalUrl,
+  });
 });
 
 // ✅ Manejador global de errores
 app.use((err, req, res, next) => {
-  const status = err.response?.status || 500;
-  const message = err.response?.data || err.message || "Unexpected error";
-  console.error("[Error]", message);
-  res.status(status).json({
+  console.error("[Error]", err.message);
+  res.status(500).json({
     status: "error",
-    message,
-    details: err.response?.data || undefined
+    message: err.message || "Unexpected error",
   });
 });
 
+// ✅ Inicio del servidor
 const port = Number(process.env.PORT) || 4000;
 app.listen(port, () => {
   console.log(`✅ Server listening on port ${port}`);
