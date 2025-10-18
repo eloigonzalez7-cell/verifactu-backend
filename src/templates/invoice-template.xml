@@ -42,7 +42,7 @@
           <sum1:SistemaInformatico>
             <sum1:NombreRazon>{{EMISOR_NOMBRE}}</sum1:NombreRazon>
             <sum1:NIF>{{EMISOR_NIF}}</sum1:NIF>
-            <sum1:NombreSistemaInformatico>VeriFactu-POC</sum1:NombreSistemaInformatico>
+            <sum1:NombreSistemaInformatico>enviafacturas.es</sum1:NombreSistemaInformatico>
             <sum1:IdSistemaInformatico>77</sum1:IdSistemaInformatico>
             <sum1:Version>1.0.03</sum1:Version>
             <sum1:NumeroInstalacion>383</sum1:NumeroInstalacion>

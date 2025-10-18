@@ -9,7 +9,8 @@ const app = express();
 // ✅ Lista de orígenes permitidos (localhost + GitHub Pages)
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://eloigonzalez7-cell.github.io"
+  "https://enviafacturas.es",
+  "https://www.enviafacturas.es"
 ];
 
 // ✅ CORS manual (robusto y compatible con Render/Koyeb)
