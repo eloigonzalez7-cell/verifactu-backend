@@ -55,6 +55,19 @@ app.get("/", (req, res) => {
 // ✅ Rutas principales
 app.use("/", invoiceRoutes);
 
+// ✅ Ruta informativa para /api (útil en pruebas manuales)
+app.get("/api", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "🚀 VeriFactu Backend is running successfully on enviafacturas.es/api",
+    environment: process.env.NODE_ENV || "development",
+    basePath: "/api",
+  });
+});
+
+// ✅ Rutas principales
+app.use("/api", invoiceRoutes); // Permite acceder aunque el proxy no elimine el prefijo /api
+
 // ✅ 404 fallback
 app.use((req, res) => {
   res.status(404).json({
