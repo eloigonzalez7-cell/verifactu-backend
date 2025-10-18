@@ -74,7 +74,7 @@ app.use((err, req, res, next) => {
 });
 
 // ✅ Inicio del servidor
-const port = Number(process.env.PORT) || 8000;
+const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`✅ Server listening on port ${port}`);
 });
