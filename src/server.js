@@ -44,7 +44,7 @@ app.use(express.text({ type: ["application/xml", "text/xml", "text/plain"] })); 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // ✅ Ruta raíz (mensaje satisfactorio)
-app.get("/api", (req, res) => {
+app.get("/", (req, res) => {
   res.status(200).json({
     status: "ok",
     message: "🚀 VeriFactu Backend is running successfully on enviafacturas.es/api",
@@ -53,7 +53,7 @@ app.get("/api", (req, res) => {
 });
 
 // ✅ Rutas principales
-app.use("/api", invoiceRoutes);
+app.use("/", invoiceRoutes);
 
 // ✅ 404 fallback
 app.use((req, res) => {
