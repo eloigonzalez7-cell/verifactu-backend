@@ -43,10 +43,10 @@ app.use(express.text({ type: ["application/xml", "text/xml", "text/plain"] })); 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // ✅ Ruta raíz (mensaje satisfactorio)
-app.get("/", (req, res) => {
+app.get("/api", (req, res) => {
   res.status(200).json({
     status: "ok",
-    message: "🚀 VeriFactu Backend is running successfully on Render",
+    message: "🚀 VeriFactu Backend is running successfully on enviafacturas.es/api",
     environment: process.env.NODE_ENV || "development",
   });
 });
@@ -73,7 +73,7 @@ app.use((err, req, res, next) => {
 });
 
 // ✅ Inicio del servidor
-const port = Number(process.env.PORT) || 4000;
+const port = Number(process.env.PORT) || 8000;
 app.listen(port, () => {
   console.log(`✅ Server listening on port ${port}`);
 });
