@@ -1,8 +1,12 @@
+// services/xmlBuilder.js
+// Construye el SOAP + RegistroAlta con placeholders y huella SHA-256.
+// NO firma: la firma real se inyecta luego en signer.signXmlWithXades().
+
 import { readFile } from "fs/promises";
 import { createHash } from "crypto";
 import { create } from "xmlbuilder2";
 
-const templatePath = new URL("../templates/invoice-template.xml", import.meta.url);
+const templatePath = new URL("./templates/invoice-template.xml", import.meta.url);
 
 const PLACEHOLDERS = [
   "EMISOR_NOMBRE",
@@ -18,7 +22,8 @@ const PLACEHOLDERS = [
   "TOTAL",
   "TIMESTAMP",
   "HUELLA",
-  "SIGNATURE"
+  // dejamos SIGNATURE para que el signer lo reemplace por ds:Signature
+  "SIGNATURE",
 ];
 
 function formatNumber(value) {
@@ -26,17 +31,15 @@ function formatNumber(value) {
 }
 
 function ensureSingleVAT(lines) {
-  const distinctRates = [...new Set(lines.map((line) => Number(line.tipoIva)))];
-  if (distinctRates.length === 0) {
-    throw new Error("No IVA rate provided in invoice lines");
-  }
-  if (distinctRates.length > 1) {
+  const rates = [...new Set(lines.map((l) => Number(l.tipoIva)))];
+  if (rates.length === 0) throw new Error("No IVA rate provided in invoice lines");
+  if (rates.length > 1) {
     console.warn("⚠️ Multiple IVA rates detected. Using the first one for simplified XML.");
   }
-  return distinctRates[0];
+  return rates[0];
 }
 
-export async function buildInvoiceXml(invoice, signature) {
+export async function buildInvoiceXml(invoice, signature = "") {
   if (!invoice) throw new Error("Missing invoice payload");
 
   const {
@@ -45,19 +48,18 @@ export async function buildInvoiceXml(invoice, signature) {
     numero,
     fechaEmision,
     descripcionOperacion,
-    lineas = []
+    lineas = [],
   } = invoice;
 
-  if (!emisor?.nif || !emisor?.nombre)
-    throw new Error("Incomplete emitter information");
-  if (!receptor?.nif || !receptor?.nombre)
-    throw new Error("Incomplete receiver information");
-  if (!numero || !fechaEmision || !descripcionOperacion)
+  if (!emisor?.nif || !emisor?.nombre) throw new Error("Incomplete emitter information");
+  if (!receptor?.nif || !receptor?.nombre) throw new Error("Incomplete receiver information");
+  if (!numero || !fechaEmision || !descripcionOperacion) {
     throw new Error("Invoice number, date and description are required");
-  if (!Array.isArray(lineas) || lineas.length === 0)
+  }
+  if (!Array.isArray(lineas) || lineas.length === 0) {
     throw new Error("Invoice must contain at least one line");
+  }
 
-  // ✅ Calcular base, cuota y total según tu payload real
   const iva = ensureSingleVAT(lineas);
   const baseTotal = lineas.reduce(
     (acc, line) => acc + (Number(line.precio || 0) * Number(line.cantidad || 1)),
@@ -66,12 +68,13 @@ export async function buildInvoiceXml(invoice, signature) {
   const quotaTotal = baseTotal * (iva / 100);
   const amountTotal = baseTotal + quotaTotal;
 
-  // ✅ Generar hash (huella)
+  // Huella (TipoHuella 01 -> SHA-256). La especificación muestra ejemplos de valor
+  // pero no fija la fórmula de concatenación en el documento aportado. Mantengo tu criterio
+  // de concatenar: NIF + NumSerie + FechaExpedicion + 'F1' + CuotaTotal + ImporteTotal + Timestamp. :contentReference[oaicite:5]{index=5}
   const timestamp = new Date().toISOString();
   const hashSource = `${emisor.nif}${numero}${fechaEmision}F1${formatNumber(quotaTotal)}${formatNumber(amountTotal)}${timestamp}`;
   const huella = createHash("sha256").update(hashSource).digest("hex").toUpperCase();
 
-  // ✅ Sustituir placeholders en plantilla XML
   const replacements = {
     EMISOR_NOMBRE: emisor.nombre,
     EMISOR_NIF: emisor.nif,
@@ -86,7 +89,7 @@ export async function buildInvoiceXml(invoice, signature) {
     TOTAL: formatNumber(amountTotal),
     TIMESTAMP: timestamp,
     HUELLA: huella,
-    SIGNATURE: signature || ""
+    SIGNATURE: signature || "", // será reemplazado luego por ds:Signature real
   };
 
   let template = await readFile(templatePath, "utf-8");
@@ -94,7 +97,7 @@ export async function buildInvoiceXml(invoice, signature) {
     template = template.replaceAll(`{{${key}}}`, replacements[key]);
   }
 
-  // ✅ Generar XML sin saltos innecesarios
+  // XML compacto (sin pretty print)
   const document = create(template);
   const xml = document.end({ prettyPrint: false });
 
@@ -105,7 +108,7 @@ export async function buildInvoiceXml(invoice, signature) {
       huella,
       base: formatNumber(baseTotal),
       cuota: formatNumber(quotaTotal),
-      total: formatNumber(amountTotal)
-    }
+      total: formatNumber(amountTotal),
+    },
   };
 }
