@@ -1,53 +1,52 @@
-// src/services/aeatClient.js
-// Envío SOAP 1.1 a AEAT. Si hay CERT_PATH/PASS, usa mTLS.
-
-import axios from "axios";
+// src/services/aeatClient.js (ESM)
 import https from "https";
+import axios from "axios";
 import fs from "fs";
 import path from "path";
 
-export async function sendToAEAT(soapXml) {
-  const endpoint = process.env.AEAT_ENDPOINT;
-  if (!endpoint) throw new Error("AEAT_ENDPOINT not set");
+const ENDPOINT = process.env.AEAT_ENDPOINT;
 
-  let agent;
-  if (process.env.CERT_PATH && process.env.CERT_PASS) {
-    try {
-      agent = new https.Agent({
-        pfx: fs.readFileSync(path.resolve(process.env.CERT_PATH)),
-        passphrase: process.env.CERT_PASS,
-        minVersion: "TLSv1.2",
-        maxVersion: "TLSv1.2",
-        rejectUnauthorized: true
-      });
-    } catch (e) {
-      console.warn("⚠️ Could not load client certificate:", e.message);
-    }
-  }
+const agent = new https.Agent({
+  pfx: fs.readFileSync(path.resolve(process.env.CERT_PATH)),
+  passphrase: process.env.CERT_PASS || "",
+  // Si tu cadena no está en el trust del sistema y sólo quieres probar, podrías poner false,
+  // pero en producción déjalo en true:
+  rejectUnauthorized: true,
+  keepAlive: true,
+});
+
+export async function sendToAEAT(xmlBody) {
+  const url = ENDPOINT;
+  const headers = {
+    "Content-Type": "text/xml; charset=utf-8",
+    // Operación de Alta para NO VERI*FACTU:
+    "SOAPAction": "ValRegistroNoVF",
+    "Accept": "text/xml",
+    "User-Agent": "enviafacturas.es/1.0",
+    "Connection": "keep-alive",
+    "Host": new URL(url).host,
+  };
 
   try {
-    const resp = await axios.post(endpoint, soapXml, {
+    const resp = await axios.post(url, xmlBody, {
       httpsAgent: agent,
-      headers: {
-        "Content-Type": "text/xml; charset=utf-8",
-        "Accept": "text/xml",
-        "SOAPAction": '""'
-      },
+      headers,
       timeout: 30000,
-      decompress: true,
-      validateStatus: () => true
+      maxBodyLength: Infinity,
+      validateStatus: () => true,
     });
 
     return {
       status: "ok",
       httpStatus: resp.status,
-      data: typeof resp.data === "string" ? resp.data : String(resp.data)
+      data: typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data),
+      headers: resp.headers,
     };
   } catch (err) {
     return {
       status: "error",
-      httpStatus: 0,
-      message: err.message
+      httpStatus: err.response?.status || 0,
+      data: err.response?.data || String(err.message || err),
     };
   }
 }
