@@ -56,7 +56,7 @@ function loadPkcs12(p12Path, passphrase = "") {
 }
 
 function buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec }) {
-  // CertDigest de SigningCertificate con SHA-1 (XAdES 1.3.2 clásico)
+  // CertDigest de SigningCertificate con SHA-1 (XAdES 1.3.2)
   const certDigestB64 = b64Digest(certDer, "sha1");
   const signingTime = new Date().toISOString();
 
@@ -113,7 +113,7 @@ class X509KeyInfoProvider {
 }
 
 export function signXmlWithXades(xmlUnsigned) {
-  const p12Path = process.env.CERT_PATH;
+  const p12Path = process.env.CCERT_PATH || process.env.CERT_PATH; // CCERT_PATH fallback por si acaso
   const p12Pass = process.env.CERT_PASS || "";
   if (!p12Path) throw new Error("CERT_PATH not set");
 
@@ -144,29 +144,31 @@ export function signXmlWithXades(xmlUnsigned) {
   sig.signingKey = privateKeyPem;
   sig.keyInfoProvider = new X509KeyInfoProvider(certB64);
 
+  // ✅ API por objeto: siempre incluye digestAlgorithm
   // Referencia principal: TODO el contenido de RegistroAlta (enveloped + c14n), digest SHA-256
-  sig.addReference(
-    `#${regId}`,
-    [
+  sig.addReference({
+    uri: `#${regId}`,
+    transforms: [
       "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
       "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
     ],
-    "http://www.w3.org/2001/04/xmlenc#sha256",
-    undefined,
-    "ref-obj-registro"
-  );
+    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+    id: "ref-obj-registro"
+  });
 
-  // XAdES: Objeto + referencia a SignedProperties
+  // XAdES: referencia a SignedProperties (Type XAdES) con digest SHA-256
+  sig.addReference({
+    uri: `#${signedPropsId}`,
+    transforms: ["http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
+    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+    type: "http://uri.etsi.org/01903#SignedProperties"
+  });
+
+  // Objeto con QualifyingProperties (incluye SignedProperties con el Id anterior)
   const qp = buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec });
   sig.addObject(`<ds:Object xmlns:ds="${NS.ds}">${qp}</ds:Object>`);
-  sig.addReference(
-    `#${signedPropsId}`,
-    ["http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
-    "http://www.w3.org/2001/04/xmlenc#sha256",
-    "http://uri.etsi.org/01903#SignedProperties"
-  );
 
-  // Calcular firma e insertarla bajo RegistroAlta
+  // Calcula la firma e insertarla bajo RegistroAlta
   sig.signatureId = signatureId;
   sig.computeSignature(new XMLSerializer().serializeToString(dom), {
     prefix: "ds",
