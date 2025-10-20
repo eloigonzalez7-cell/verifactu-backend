@@ -1,5 +1,6 @@
-// Firma XAdES-EPES (RSA-SHA256) sobre el nodo sum1:RegistroAlta.
-// Inserta <ds:Signature> dentro del registro (enveloped).
+// src/services/xadesSigner.js
+// Firma XAdES-EPES (RSA-SHA256) sobre el nodo sum1:RegistroAlta (firma enveloped).
+// Inserta <ds:Signature> dentro del registro y reemplaza <sum1:SimulatedSignature> si existe.
 
 import { readFileSync } from "fs";
 import path from "path";
@@ -15,17 +16,21 @@ const { SignedXml } = require("xml-crypto");
 const NS = {
   ds: "http://www.w3.org/2000/09/xmldsig#",
   xades: "http://uri.etsi.org/01903/v1.3.2#",
+  sum1: "https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd",
 };
 
 // Política de firma AGE (EPES)
 const POLICY_OID = "urn:oid:2.16.724.1.3.1.1.2.1.9";
 const POLICY_URL = "https://sede.administracion.gob.es/politica_de_firma_anexo_1.pdf";
-const POLICY_HASH_ALG = "http://www.w3.org/2000/09/xmldsig#sha1";
-const POLICY_HASH_B64 = "G7roucf600+f03r/o0bAOQ6WAs0=";
+const POLICY_HASH_ALG = "http://www.w3.org/2000/09/xmldsig#sha1"; // para SigPolicyHash
+const POLICY_HASH_B64 = "G7roucf600+f03r/o0bAOQ6WAs0=";          // digest SHA-1 del PDF de política
 
-// Utils
-function hexToDecString(hex) { return BigInt("0x" + hex.replace(/^0x/i, "")).toString(10); }
-function digestB64(buf, alg) { return crypto.createHash(alg).update(buf).digest("base64"); }
+function hexToDecString(hex) {
+  return BigInt("0x" + hex.replace(/^0x/i, "")).toString(10);
+}
+function b64Digest(buf, alg) {
+  return crypto.createHash(alg).update(buf).digest("base64");
+}
 
 function loadPkcs12(p12Path, passphrase = "") {
   const abs = path.resolve(p12Path);
@@ -36,7 +41,6 @@ function loadPkcs12(p12Path, passphrase = "") {
   const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag]
     || p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag];
   if (!keyBags || !keyBags[0]?.key) throw new Error("No private key in P12");
-
   const privateKeyPem = forge.pki.privateKeyToPem(keyBags[0].key);
 
   const certBag = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag]?.[0];
@@ -52,8 +56,8 @@ function loadPkcs12(p12Path, passphrase = "") {
 }
 
 function buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec }) {
-  // CertDigest de SigningCertificate con SHA-1 (XAdES 1.3.2)
-  const certDigestB64 = digestB64(certDer, "sha1");
+  // CertDigest de SigningCertificate con SHA-1 (XAdES 1.3.2 clásico)
+  const certDigestB64 = b64Digest(certDer, "sha1");
   const signingTime = new Date().toISOString();
 
   return `
@@ -102,7 +106,9 @@ function buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, i
 
 class X509KeyInfoProvider {
   constructor(certB64) { this.certB64 = certB64; }
-  getKeyInfo() { return `<ds:X509Data xmlns:ds="${NS.ds}"><ds:X509Certificate>${this.certB64}</ds:X509Certificate></ds:X509Data>`; }
+  getKeyInfo() {
+    return `<ds:X509Data xmlns:ds="${NS.ds}"><ds:X509Certificate>${this.certB64}</ds:X509Certificate></ds:X509Data>`;
+  }
   getKey() { return null; }
 }
 
@@ -114,15 +120,12 @@ export function signXmlWithXades(xmlUnsigned) {
   const { privateKeyPem, certDer, certB64, issuerName, serialDec } = loadPkcs12(p12Path, p12Pass);
 
   const dom = new DOMParser().parseFromString(xmlUnsigned, "text/xml");
-  const select = xpath.useNamespaces({
-    sum1: "https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd",
-    ds: NS.ds
-  });
+  const select = xpath.useNamespaces({ sum1: NS.sum1, ds: NS.ds });
 
   const registroAlta = select("//*[local-name()='RegistroAlta']", dom)?.[0];
   if (!registroAlta) throw new Error("RegistroAlta not found");
 
-  // Garantiza Id en RegistroAlta
+  // Garantiza Id (para referenciar el contenido del registro)
   let regId = registroAlta.getAttribute("Id");
   if (!regId) {
     regId = "RA-1";
@@ -132,7 +135,6 @@ export function signXmlWithXades(xmlUnsigned) {
   const signatureId = "Signature-RA-1";
   const signedPropsId = "SignedProperties-1";
 
-  // Preparar signer
   const sig = new SignedXml({
     idAttribute: "Id",
     canonicalizationAlgorithm: "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
@@ -142,7 +144,7 @@ export function signXmlWithXades(xmlUnsigned) {
   sig.signingKey = privateKeyPem;
   sig.keyInfoProvider = new X509KeyInfoProvider(certB64);
 
-  // Firma el contenido de RegistroAlta (enveloped) por referencia a su Id
+  // Referencia principal: TODO el contenido de RegistroAlta (enveloped + c14n), digest SHA-256
   sig.addReference(
     `#${regId}`,
     [
@@ -154,7 +156,7 @@ export function signXmlWithXades(xmlUnsigned) {
     "ref-obj-registro"
   );
 
-  // XAdES: objeto con SignedProperties y referencia firmada
+  // XAdES: Objeto + referencia a SignedProperties
   const qp = buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec });
   sig.addObject(`<ds:Object xmlns:ds="${NS.ds}">${qp}</ds:Object>`);
   sig.addReference(
@@ -164,15 +166,16 @@ export function signXmlWithXades(xmlUnsigned) {
     "http://uri.etsi.org/01903#SignedProperties"
   );
 
-  // Calcula la firma y la inserta bajo RegistroAlta
+  // Calcular firma e insertarla bajo RegistroAlta
   sig.signatureId = signatureId;
   sig.computeSignature(new XMLSerializer().serializeToString(dom), {
     prefix: "ds",
     location: { reference: "//*[local-name()='RegistroAlta']", action: "append" }
   });
 
-  // Reemplaza el marcador <sum1:SimulatedSignature> si existe
   const signatureNode = new DOMParser().parseFromString(sig.getSignatureXml(), "text/xml").documentElement;
+
+  // Reemplaza el marcador SimulatedSignature si existe
   const simulated = select("//*[local-name()='SimulatedSignature']", dom)?.[0];
   if (simulated && simulated.parentNode) {
     simulated.parentNode.replaceChild(signatureNode, simulated);

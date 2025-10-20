@@ -53,6 +53,7 @@
           <sum1:FechaHoraHusoGenRegistro>{{TIMESTAMP}}</sum1:FechaHoraHusoGenRegistro>
           <sum1:TipoHuella>01</sum1:TipoHuella>
           <sum1:Huella>{{HUELLA}}</sum1:Huella>
+          <!-- Marcador que será reemplazado por <ds:Signature> -->
           <sum1:SimulatedSignature>{{SIGNATURE}}</sum1:SimulatedSignature>
         </sum1:RegistroAlta>
       </sum:RegistroFactura>

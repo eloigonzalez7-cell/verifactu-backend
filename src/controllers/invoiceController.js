@@ -1,60 +1,47 @@
-// controllers/invoiceController.js
-// Construye el XML, lo firma con XAdES-EPES real y lo envía a AEAT.
+// src/controllers/invoiceController.js
+// Construye el XML, firma XAdES-EPES real y envía a AEAT.
 
 import { buildInvoiceXml } from "../services/xmlBuilder.js";
-import { signXmlWithXades } from "../services/signer.js";
 import { sendToAEAT } from "../services/aeatClient.js";
+import { signXmlWithXades } from "../services/xadesSigner.js";
 
 export async function sendInvoice(req, res) {
   try {
-    const invoicePayload = req.body;
+    // 1) Construir XML (sin firma)
+    const { xml: unsignedXml, metadata } = await buildInvoiceXml(req.body, "");
 
-    // 1) Construir XML (sin firma, con huella calculada)
-    const { xml: unsignedXml, metadata } = await buildInvoiceXml(invoicePayload, "");
-
-    // 2) Firmar XAdES-EPES (inserta ds:Signature bajo sum1:RegistroAlta)
+    // 2) Firmar XAdES-EPES
     let signedXml;
     try {
       signedXml = signXmlWithXades(unsignedXml);
     } catch (err) {
-      console.error("❌ Error generando firma XAdES:", err);
+      console.error("❌ Signing error:", err);
       return res.status(500).json({
         status: "error",
-        message: "No se pudo generar la firma XAdES",
-        details: err.message,
-        xmlRequest: unsignedXml,
+        message: "Signing failed",
+        details: err?.message || String(err),
+        xmlRequest: unsignedXml
       });
     }
 
     // 3) Enviar a AEAT
     const aeatResponse = await sendToAEAT(signedXml);
     const httpStatus = aeatResponse.httpStatus || 200;
-    const isOk = httpStatus >= 200 && httpStatus < 300;
+    const ok = httpStatus >= 200 && httpStatus < 300;
 
-    if (isOk) {
-      return res.status(200).json({
-        status: "success",
-        message: "✅ Invoice sent successfully to AEAT",
-        metadata,
-        xmlRequest: signedXml,
-        xmlResponse: aeatResponse,
-      });
-    }
-
-    // Devolver el detalle para diagnosticar (403 -> suele ser firma/estructura o acceso)
     return res.status(200).json({
-      status: "warning",
-      message: `⚠️ AEAT responded with status ${httpStatus}`,
+      status: ok ? "success" : "warning",
+      message: ok ? "✅ Sent to AEAT" : `⚠️ AEAT responded with status ${httpStatus}`,
       metadata,
       xmlRequest: signedXml,
-      xmlResponse: aeatResponse,
+      xmlResponse: aeatResponse
     });
   } catch (error) {
-    console.error("❌ Error en sendInvoice:", error.message);
+    console.error("❌ Controller error:", error);
     return res.status(500).json({
       status: "error",
       message: "Internal error building or sending invoice",
-      details: error.message,
+      details: error?.message || String(error)
     });
   }
 }

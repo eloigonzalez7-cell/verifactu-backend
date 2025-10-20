@@ -1,58 +1,53 @@
-// services/aeatClient.js
-// Envío del XML (firmado) a AEAT por HTTPS. Permite adjuntar PFX del cliente si el endpoint lo requiere.
+// src/services/aeatClient.js
+// Envío SOAP 1.1 a AEAT. Si hay CERT_PATH/PASS, usa mTLS.
 
 import axios from "axios";
 import https from "https";
 import fs from "fs";
+import path from "path";
 
-export async function sendToAEAT(xml) {
-  if (!process.env.AEAT_ENDPOINT) {
-    throw new Error("AEAT endpoint not configured");
+export async function sendToAEAT(soapXml) {
+  const endpoint = process.env.AEAT_ENDPOINT;
+  if (!endpoint) throw new Error("AEAT_ENDPOINT not set");
+
+  let agent;
+  if (process.env.CERT_PATH && process.env.CERT_PASS) {
+    try {
+      agent = new https.Agent({
+        pfx: fs.readFileSync(path.resolve(process.env.CERT_PATH)),
+        passphrase: process.env.CERT_PASS,
+        minVersion: "TLSv1.2",
+        maxVersion: "TLSv1.2",
+        rejectUnauthorized: true
+      });
+    } catch (e) {
+      console.warn("⚠️ Could not load client certificate:", e.message);
+    }
   }
 
   try {
-    let agent;
-    try {
-      if (process.env.CERT_PATH && process.env.CERT_PASS) {
-        // El mismo .p12 te sirve tanto para firmar (capa app) como para MTLS si el endpoint lo necesitase.
-        agent = new https.Agent({
-          pfx: fs.readFileSync(process.env.CERT_PATH),
-          passphrase: process.env.CERT_PASS,
-          rejectUnauthorized: false,
-          minVersion: "TLSv1.2",
-          maxVersion: "TLSv1.2",
-        });
-      } else {
-        // No siempre hace falta MTLS. Si AEAT/entorno no lo pide, se puede enviar sin él.
-        console.warn("⚠️ CERT_PATH o CERT_PASS no definidos para HTTPS MTLS; enviando sin certificado cliente");
-      }
-    } catch (err) {
-      console.error("❌ Error al leer certificado para HTTPS:", err.message);
-    }
-
-    const response = await axios.post(process.env.AEAT_ENDPOINT, xml, {
+    const resp = await axios.post(endpoint, soapXml, {
       httpsAgent: agent,
-      headers: { "Content-Type": "text/xml; charset=utf-8" },
+      headers: {
+        "Content-Type": "text/xml; charset=utf-8",
+        "Accept": "text/xml",
+        "SOAPAction": '""'
+      },
       timeout: 30000,
-      validateStatus: () => true, // no lanzar exception automática 4xx/5xx
+      decompress: true,
+      validateStatus: () => true
     });
-
-    if (process.env.NODE_ENV !== "production") {
-      console.log("📡 AEAT response status:", response.status);
-      console.log("📡 AEAT response data:", response.data?.slice?.(0, 400) || response.data);
-    }
 
     return {
       status: "ok",
-      httpStatus: response.status,
-      data: response.data || null,
+      httpStatus: resp.status,
+      data: typeof resp.data === "string" ? resp.data : String(resp.data)
     };
-  } catch (error) {
-    console.error("🔥 Error comunicando con AEAT:", error.message);
+  } catch (err) {
     return {
       status: "error",
-      message: "Error connecting to AEAT endpoint",
-      details: error.message,
+      httpStatus: 0,
+      message: err.message
     };
   }
 }

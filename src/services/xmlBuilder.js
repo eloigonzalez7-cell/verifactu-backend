@@ -1,80 +1,51 @@
-// services/xmlBuilder.js
-// Construye el SOAP + RegistroAlta con placeholders y huella SHA-256.
-// NO firma: la firma real se inyecta luego en signer.signXmlWithXades().
+// Construye el SOAP usando la plantilla y calcula la Huella (SHA-256).
+// No firma aquí: la firma real se inserta después en signer.signXmlWithXades().
 
 import { readFile } from "fs/promises";
+import path from "path";
 import { createHash } from "crypto";
-import { create } from "xmlbuilder2";
 
-const templatePath = new URL("./templates/invoice-template.xml", import.meta.url);
+const templatePath = path.resolve("src/services/templates/invoice-template.xml");
 
-const PLACEHOLDERS = [
-  "EMISOR_NOMBRE",
-  "EMISOR_NIF",
-  "NUMERO",
-  "FECHA",
-  "DESCRIPCION",
-  "RECEPTOR_NOMBRE",
-  "RECEPTOR_NIF",
-  "IVA",
-  "BASE",
-  "CUOTA",
-  "TOTAL",
-  "TIMESTAMP",
-  "HUELLA",
-  // dejamos SIGNATURE para que el signer lo reemplace por ds:Signature
-  "SIGNATURE",
-];
-
-function formatNumber(value) {
-  return Number(value || 0).toFixed(2);
+function two(n){ return String(n).padStart(2,"0"); }
+function isoWithOffset(d = new Date()){
+  const tz = -d.getTimezoneOffset(); // minutos respecto UTC
+  const sign = tz >= 0 ? "+" : "-";
+  const hh = two(Math.floor(Math.abs(tz)/60));
+  const mm = two(Math.abs(tz)%60);
+  return d.toISOString().replace("Z", `${sign}${hh}:${mm}`);
 }
+function num(v){ return Number(v || 0); }
+function f2(v){ return num(v).toFixed(2); }
 
-function ensureSingleVAT(lines) {
-  const rates = [...new Set(lines.map((l) => Number(l.tipoIva)))];
-  if (rates.length === 0) throw new Error("No IVA rate provided in invoice lines");
-  if (rates.length > 1) {
-    console.warn("⚠️ Multiple IVA rates detected. Using the first one for simplified XML.");
-  }
+function ensureSingleVat(lines){
+  const rates = [...new Set(lines.map(l => Number(l.tipoIva)))];
+  if (rates.length === 0) throw new Error("Missing tipoIva in lines");
+  if (rates.length > 1) console.warn("Multiple tipoIva detected; using the first for simplified XML");
   return rates[0];
 }
 
 export async function buildInvoiceXml(invoice, signature = "") {
-  if (!invoice) throw new Error("Missing invoice payload");
+  const { emisor, receptor, numero, fechaEmision, descripcionOperacion, lineas = [] } = invoice || {};
+  if (!emisor?.nif || !emisor?.nombre) throw new Error("Incomplete emitter info");
+  if (!receptor?.nif || !receptor?.nombre) throw new Error("Incomplete receiver info");
+  if (!numero || !fechaEmision || !descripcionOperacion) throw new Error("Missing numero/fechaEmision/descripcionOperacion");
+  if (!Array.isArray(lineas) || lineas.length === 0) throw new Error("Invoice must have at least one line");
 
-  const {
-    emisor,
-    receptor,
-    numero,
-    fechaEmision,
-    descripcionOperacion,
-    lineas = [],
-  } = invoice;
+  const iva = ensureSingleVat(lineas);
+  const base = lineas.reduce((acc, l) => acc + num(l.cantidad) * num(l.precio), 0);
+  const cuota = +(base * (iva/100));
+  const total = base + cuota;
 
-  if (!emisor?.nif || !emisor?.nombre) throw new Error("Incomplete emitter information");
-  if (!receptor?.nif || !receptor?.nombre) throw new Error("Incomplete receiver information");
-  if (!numero || !fechaEmision || !descripcionOperacion) {
-    throw new Error("Invoice number, date and description are required");
-  }
-  if (!Array.isArray(lineas) || lineas.length === 0) {
-    throw new Error("Invoice must contain at least one line");
-  }
+  // Timestamp con offset local
+  const timestamp = isoWithOffset(new Date());
 
-  const iva = ensureSingleVAT(lineas);
-  const baseTotal = lineas.reduce(
-    (acc, line) => acc + (Number(line.precio || 0) * Number(line.cantidad || 1)),
-    0
-  );
-  const quotaTotal = baseTotal * (iva / 100);
-  const amountTotal = baseTotal + quotaTotal;
+  // Huella (TipoHuella 01 -> SHA-256). Mantengo criterio simple (ajustable):
+  // NIF + NumSerie + FechaExpedicion + TipoFactura(F1) + CuotaTotal + ImporteTotal + Timestamp
+  const huellaSource = `${emisor.nif}${numero}${fechaEmision}F1${f2(cuota)}${f2(total)}${timestamp}`;
+  const huella = createHash("sha256").update(huellaSource).digest("hex").toUpperCase();
 
-  // Huella (TipoHuella 01 -> SHA-256). La especificación muestra ejemplos de valor
-  // pero no fija la fórmula de concatenación en el documento aportado. Mantengo tu criterio
-  // de concatenar: NIF + NumSerie + FechaExpedicion + 'F1' + CuotaTotal + ImporteTotal + Timestamp. :contentReference[oaicite:5]{index=5}
-  const timestamp = new Date().toISOString();
-  const hashSource = `${emisor.nif}${numero}${fechaEmision}F1${formatNumber(quotaTotal)}${formatNumber(amountTotal)}${timestamp}`;
-  const huella = createHash("sha256").update(hashSource).digest("hex").toUpperCase();
-
+  let xml = await readFile(templatePath, "utf-8");
   const replacements = {
     EMISOR_NOMBRE: emisor.nombre,
     EMISOR_NIF: emisor.nif,
@@ -83,32 +54,26 @@ export async function buildInvoiceXml(invoice, signature = "") {
     DESCRIPCION: descripcionOperacion,
     RECEPTOR_NOMBRE: receptor.nombre,
     RECEPTOR_NIF: receptor.nif,
-    IVA: formatNumber(iva),
-    BASE: formatNumber(baseTotal),
-    CUOTA: formatNumber(quotaTotal),
-    TOTAL: formatNumber(amountTotal),
+    IVA: f2(iva),
+    BASE: f2(base),
+    CUOTA: f2(cuota),
+    TOTAL: f2(total),
     TIMESTAMP: timestamp,
     HUELLA: huella,
-    SIGNATURE: signature || "", // será reemplazado luego por ds:Signature real
+    SIGNATURE: signature || ""
   };
-
-  let template = await readFile(templatePath, "utf-8");
-  for (const key of PLACEHOLDERS) {
-    template = template.replaceAll(`{{${key}}}`, replacements[key]);
+  for (const [k, v] of Object.entries(replacements)) {
+    xml = xml.replaceAll(`{{${k}}}`, v);
   }
-
-  // XML compacto (sin pretty print)
-  const document = create(template);
-  const xml = document.end({ prettyPrint: false });
 
   return {
     xml,
     metadata: {
       timestamp,
       huella,
-      base: formatNumber(baseTotal),
-      cuota: formatNumber(quotaTotal),
-      total: formatNumber(amountTotal),
-    },
+      base: f2(base),
+      cuota: f2(cuota),
+      total: f2(total)
+    }
   };
 }
