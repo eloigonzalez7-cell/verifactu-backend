@@ -5,7 +5,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { createHash } from "crypto";
 
-const templatePath = path.resolve("src/services/templates/invoice-template.xml");
+const templatePath = path.resolve("src/templates/invoice-template.xml");
 
 function two(n){ return String(n).padStart(2,"0"); }
 function isoWithOffset(d = new Date()){
