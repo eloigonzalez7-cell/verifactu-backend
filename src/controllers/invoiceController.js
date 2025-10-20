@@ -1,32 +1,27 @@
-// src/controllers/invoiceController.js
-// Construye el XML, firma XAdES-EPES real y envía a AEAT.
+// Construye el XML, firma y envía a AEAT.
 
 import { buildInvoiceXml } from "../services/xmlBuilder.js";
 import { sendToAEAT } from "../services/aeatClient.js";
-import { signXmlWithXades } from "../services/xadesSigner.js";
+import { signXmlWithXades } from "../services/xadesSigner.js"; 
 
 export async function sendInvoice(req, res) {
   try {
-    // 1) Construir XML (sin firma)
     const { xml: unsignedXml, metadata } = await buildInvoiceXml(req.body, "");
 
-    // 2) Firmar XAdES-EPES
     let signedXml;
     try {
       signedXml = signXmlWithXades(unsignedXml);
-    } catch (err) {
-      console.error("❌ Signing error:", err);
+    } catch (e) {
       return res.status(500).json({
         status: "error",
         message: "Signing failed",
-        details: err?.message || String(err),
-        xmlRequest: unsignedXml
+        details: e?.message || String(e),
+        xmlRequest: unsignedXml,
       });
     }
 
-    // 3) Enviar a AEAT
-    const aeatResponse = await sendToAEAT(signedXml);
-    const httpStatus = aeatResponse.httpStatus || 200;
+    const aeat = await sendToAEAT(signedXml);
+    const httpStatus = aeat.httpStatus || 200;
     const ok = httpStatus >= 200 && httpStatus < 300;
 
     return res.status(200).json({
@@ -34,14 +29,13 @@ export async function sendInvoice(req, res) {
       message: ok ? "✅ Sent to AEAT" : `⚠️ AEAT responded with status ${httpStatus}`,
       metadata,
       xmlRequest: signedXml,
-      xmlResponse: aeatResponse
+      xmlResponse: aeat,
     });
-  } catch (error) {
-    console.error("❌ Controller error:", error);
+  } catch (err) {
     return res.status(500).json({
       status: "error",
       message: "Internal error building or sending invoice",
-      details: error?.message || String(error)
+      details: err?.message || String(err),
     });
   }
 }
