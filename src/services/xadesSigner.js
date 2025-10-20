@@ -1,189 +1,131 @@
-// src/services/xadesSigner.js
-// Firma XAdES-EPES (RSA-SHA256) sobre el nodo sum1:RegistroAlta (firma enveloped).
-// Inserta <ds:Signature> dentro del registro y reemplaza <sum1:SimulatedSignature> si existe.
+// Firma XML (XMLDSig enveloped) del nodo <sum1:RegistroAlta>
+// Requisitos: xml-crypto ^6, @xmldom/xmldom, node-forge, xpath
+// Usa el .p12 de pruebas indicado en .env (CERT_PATH y CERT_PASS)
 
-import { readFileSync } from "fs";
-import path from "path";
-import { createRequire } from "module";
-import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
-import xpath from "xpath";
-import crypto from "crypto";
-import forge from "node-forge";
-
-const require = createRequire(import.meta.url);
+const fs = require("fs");
+const path = require("path");
+const forge = require("node-forge");
 const { SignedXml } = require("xml-crypto");
+const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
+const xpath = require("xpath");
 
-const NS = {
-  ds: "http://www.w3.org/2000/09/xmldsig#",
-  xades: "http://uri.etsi.org/01903/v1.3.2#",
-  sum1: "https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd",
-};
+const C14N_EXC = "http://www.w3.org/2001/10/xml-exc-c14n#";
+const SIG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+const DIGEST_SHA256 = "http://www.w3.org/2001/04/xmlenc#sha256";
+const TR_ENVELOPED = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
 
-// Política de firma AGE (EPES)
-const POLICY_OID = "urn:oid:2.16.724.1.3.1.1.2.1.9";
-const POLICY_URL = "https://sede.administracion.gob.es/politica_de_firma_anexo_1.pdf";
-const POLICY_HASH_ALG = "http://www.w3.org/2000/09/xmldsig#sha1"; // para SigPolicyHash
-const POLICY_HASH_B64 = "G7roucf600+f03r/o0bAOQ6WAs0=";          // digest SHA-1 del PDF de política
+function loadPkcs12(p12Path, passphrase) {
+  const absPath = path.isAbsolute(p12Path) ? p12Path : path.join(process.cwd(), p12Path);
+  const p12Bytes = fs.readFileSync(absPath);
+  const p12Der = forge.util.createBuffer(p12Bytes.toString("binary"));
+  const asn1 = forge.asn1.fromDer(p12Der);
+  const p12 = forge.pkcs12.pkcs12FromAsn1(asn1, passphrase || "");
 
-function hexToDecString(hex) {
-  return BigInt("0x" + hex.replace(/^0x/i, "")).toString(10);
-}
-function b64Digest(buf, alg) {
-  return crypto.createHash(alg).update(buf).digest("base64");
-}
+  let privateKeyPem = null;
+  let certificatePem = null;
 
-function loadPkcs12(p12Path, passphrase = "") {
-  const abs = path.resolve(p12Path);
-  const p12Der = readFileSync(abs);
-  const p12Asn1 = forge.asn1.fromDer(p12Der.toString("binary"));
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, passphrase);
-
-  const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag]
-    || p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag];
-  if (!keyBags || !keyBags[0]?.key) throw new Error("No private key in P12");
-  const privateKeyPem = forge.pki.privateKeyToPem(keyBags[0].key);
-
-  const certBag = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag]?.[0];
-  if (!certBag?.cert) throw new Error("No certificate in P12");
-  const cert = certBag.cert;
-
-  const certDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(), "binary");
-  const certB64 = certDer.toString("base64");
-  const issuerName = cert.issuer.attributes.map(a => `${a.shortName || a.name}=${a.value}`).join(", ");
-  const serialDec = hexToDecString(cert.serialNumber);
-
-  return { privateKeyPem, certDer, certB64, issuerName, serialDec };
-}
-
-function buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec }) {
-  // CertDigest de SigningCertificate con SHA-1 (XAdES 1.3.2)
-  const certDigestB64 = b64Digest(certDer, "sha1");
-  const signingTime = new Date().toISOString();
-
-  return `
-<xades:QualifyingProperties xmlns:xades="${NS.xades}" Target="#${signatureId}">
-  <xades:SignedProperties Id="${signedPropsId}">
-    <xades:SignedSignatureProperties>
-      <xades:SigningTime>${signingTime}</xades:SigningTime>
-      <xades:SigningCertificate>
-        <xades:Cert>
-          <xades:CertDigest>
-            <ds:DigestMethod xmlns:ds="${NS.ds}" Algorithm="${POLICY_HASH_ALG}"/>
-            <ds:DigestValue xmlns:ds="${NS.ds}">${certDigestB64}</ds:DigestValue>
-          </xades:CertDigest>
-          <xades:IssuerSerial>
-            <ds:X509IssuerName xmlns:ds="${NS.ds}">${issuerName}</ds:X509IssuerName>
-            <ds:X509SerialNumber xmlns:ds="${NS.ds}">${serialDec}</ds:X509SerialNumber>
-          </xades:IssuerSerial>
-        </xades:Cert>
-      </xades:SigningCertificate>
-      <xades:SignaturePolicyIdentifier>
-        <xades:SignaturePolicyId>
-          <xades:SigPolicyId>
-            <xades:Identifier>${POLICY_OID}</xades:Identifier>
-            <xades:Description>Política AGE</xades:Description>
-            <xades:DocumentationReferences>
-              <xades:DocumentationReference>${POLICY_URL}</xades:DocumentationReference>
-            </xades:DocumentationReferences>
-          </xades:SigPolicyId>
-          <xades:SigPolicyHash>
-            <ds:DigestMethod xmlns:ds="${NS.ds}" Algorithm="${POLICY_HASH_ALG}"/>
-            <ds:DigestValue xmlns:ds="${NS.ds}">${POLICY_HASH_B64}</ds:DigestValue>
-          </xades:SigPolicyHash>
-        </xades:SignaturePolicyId>
-      </xades:SignaturePolicyIdentifier>
-    </xades:SignedSignatureProperties>
-    <xades:SignedDataObjectProperties>
-      <xades:DataObjectFormat ObjectReference="#ref-obj-registro">
-        <xades:MimeType>text/xml</xades:MimeType>
-        <xades:Encoding>UTF-8</xades:Encoding>
-      </xades:DataObjectFormat>
-    </xades:SignedDataObjectProperties>
-  </xades:SignedProperties>
-</xades:QualifyingProperties>
-`.trim();
-}
-
-class X509KeyInfoProvider {
-  constructor(certB64) { this.certB64 = certB64; }
-  getKeyInfo() {
-    return `<ds:X509Data xmlns:ds="${NS.ds}"><ds:X509Certificate>${this.certB64}</ds:X509Certificate></ds:X509Data>`;
-  }
-  getKey() { return null; }
-}
-
-export function signXmlWithXades(xmlUnsigned) {
-  const p12Path = process.env.CCERT_PATH || process.env.CERT_PATH; // CCERT_PATH fallback por si acaso
-  const p12Pass = process.env.CERT_PASS || "";
-  if (!p12Path) throw new Error("CERT_PATH not set");
-
-  const { privateKeyPem, certDer, certB64, issuerName, serialDec } = loadPkcs12(p12Path, p12Pass);
-
-  const dom = new DOMParser().parseFromString(xmlUnsigned, "text/xml");
-  const select = xpath.useNamespaces({ sum1: NS.sum1, ds: NS.ds });
-
-  const registroAlta = select("//*[local-name()='RegistroAlta']", dom)?.[0];
-  if (!registroAlta) throw new Error("RegistroAlta not found");
-
-  // Garantiza Id (para referenciar el contenido del registro)
-  let regId = registroAlta.getAttribute("Id");
-  if (!regId) {
-    regId = "RA-1";
-    registroAlta.setAttribute("Id", regId);
+  for (const safeContent of p12.safeContents) {
+    for (const safeBag of safeContent.safeBags) {
+      if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag || safeBag.type === forge.pki.oids.keyBag) {
+        const pk = safeBag.key;
+        privateKeyPem = forge.pki.privateKeyToPem(pk);
+      }
+      if (safeBag.type === forge.pki.oids.certBag) {
+        const cert = safeBag.cert;
+        certificatePem = forge.pki.certificateToPem(cert);
+      }
+    }
   }
 
-  const signatureId = "Signature-RA-1";
-  const signedPropsId = "SignedProperties-1";
+  if (!privateKeyPem || !certificatePem) {
+    throw new Error("No se pudo extraer clave privada y certificado del .p12");
+  }
 
+  const certB64 = certificatePem
+    .replace(/-----BEGIN CERTIFICATE-----/g, "")
+    .replace(/-----END CERTIFICATE-----/g, "")
+    .replace(/\r?\n|\r/g, "");
+
+  return { privateKeyPem, certificatePem, certB64 };
+}
+
+function stripSimulatedSignature(xml) {
+  // Elimina el placeholder <sum1:SimulatedSignature>...</sum1:SimulatedSignature>
+  return xml.replace(/<\s*sum1:SimulatedSignature[^>]*>[\s\S]*?<\s*\/\s*sum1:SimulatedSignature\s*>/gi, "");
+}
+
+function ensureRegistroAltaHasId(xmlDoc) {
+  // Añadimos un Id estable al nodo <sum1:RegistroAlta> para evitar IDs auto (_0)
+  const nsResolver = {
+    sum1: "https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd",
+  };
+  const select = xpath.useNamespaces(nsResolver);
+  const regAlta = select("//*[local-name()='RegistroAlta']", xmlDoc)[0];
+  if (!regAlta) {
+    throw new Error("No se encontró el nodo <sum1:RegistroAlta> en el XML a firmar");
+  }
+  // Si ya tiene Id/ID/id, lo respetamos
+  if (!regAlta.getAttribute("Id") && !regAlta.getAttribute("ID") && !regAlta.getAttribute("id")) {
+    regAlta.setAttribute("Id", "RegistroAlta-1");
+  }
+  return regAlta;
+}
+
+function buildKeyInfo(certB64) {
+  // Incluimos el certificado en <ds:KeyInfo> -> <ds:X509Data>
+  return `<X509Data><X509Certificate>${certB64}</X509Certificate></X509Data>`;
+}
+
+function signRegistroAlta(xmlString, p12Path, p12Pass) {
+  const { privateKeyPem, certificatePem, certB64 } = loadPkcs12(p12Path, p12Pass);
+
+  // 1) eliminar marcador SimulatedSignature si existe
+  const xmlClean = stripSimulatedSignature(xmlString);
+
+  // 2) parsear y asegurar Id en RegistroAlta
+  const doc = new DOMParser().parseFromString(xmlClean, "text/xml");
+  ensureRegistroAltaHasId(doc);
+  const xmlPrepared = new XMLSerializer().serializeToString(doc);
+
+  // 3) configurar firma
   const sig = new SignedXml({
-    idAttribute: "Id",
-    canonicalizationAlgorithm: "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
-    signatureAlgorithm: "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+    privateKey: Buffer.from(privateKeyPem),
+    publicCert: Buffer.from(certificatePem),
+    signatureAlgorithm: SIG_RSA_SHA256,
+    canonicalizationAlgorithm: C14N_EXC,
   });
 
-  sig.signingKey = privateKeyPem;
-  sig.keyInfoProvider = new X509KeyInfoProvider(certB64);
+  // KeyInfo con X509Certificate en base64
+  sig.getKeyInfoContent = () => buildKeyInfo(certB64);
 
-  // ✅ API por objeto: siempre incluye digestAlgorithm
-  // Referencia principal: TODO el contenido de RegistroAlta (enveloped + c14n), digest SHA-256
+  // Referencia al nodo RegistroAlta (enveloped + c14n exc)
   sig.addReference({
-    uri: `#${regId}`,
-    transforms: [
-      "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
-      "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
-    ],
-    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
-    id: "ref-obj-registro"
+    xpath: "//*[local-name(.)='RegistroAlta']",
+    transforms: [TR_ENVELOPED, C14N_EXC],
+    digestAlgorithm: DIGEST_SHA256,
   });
 
-  // XAdES: referencia a SignedProperties (Type XAdES) con digest SHA-256
-  sig.addReference({
-    uri: `#${signedPropsId}`,
-    transforms: ["http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
-    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
-    type: "http://uri.etsi.org/01903#SignedProperties"
-  });
-
-  // Objeto con QualifyingProperties (incluye SignedProperties con el Id anterior)
-  const qp = buildXadesQualifyingProperties({ signatureId, signedPropsId, certDer, issuerName, serialDec });
-  sig.addObject(`<ds:Object xmlns:ds="${NS.ds}">${qp}</ds:Object>`);
-
-  // Calcula la firma e insertarla bajo RegistroAlta
-  sig.signatureId = signatureId;
-  sig.computeSignature(new XMLSerializer().serializeToString(dom), {
+  // 4) calcular firma, insertando <ds:Signature> dentro de RegistroAlta
+  sig.computeSignature(xmlPrepared, {
     prefix: "ds",
-    location: { reference: "//*[local-name()='RegistroAlta']", action: "append" }
+    location: {
+      reference: "//*[local-name(.)='RegistroAlta']",
+      action: "append",
+    },
   });
 
-  const signatureNode = new DOMParser().parseFromString(sig.getSignatureXml(), "text/xml").documentElement;
-
-  // Reemplaza el marcador SimulatedSignature si existe
-  const simulated = select("//*[local-name()='SimulatedSignature']", dom)?.[0];
-  if (simulated && simulated.parentNode) {
-    simulated.parentNode.replaceChild(signatureNode, simulated);
-  } else {
-    registroAlta.appendChild(signatureNode);
-  }
-
-  return new XMLSerializer().serializeToString(dom);
+  return sig.getSignedXml();
 }
+
+module.exports = {
+  /**
+   * Firma el XML SOAP completo sobre el nodo sum1:RegistroAlta.
+   * Lee CERT_PATH y CERT_PASS del entorno.
+   */
+  signEnvelopeXML: (xmlString) => {
+    const p12Path = process.env.CERT_PATH;
+    const p12Pass = process.env.CERT_PASS || "";
+    if (!p12Path) throw new Error("CERT_PATH no definido en .env");
+    return signRegistroAlta(xmlString, p12Path, p12Pass);
+  },
+};
