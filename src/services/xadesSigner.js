@@ -1,5 +1,5 @@
 // Firma XMLDSig (RSA-SHA256) del nodo <sum1:RegistroAlta> (firma "enveloped")
-// Requisitos: xml-crypto, @xmldom/xmldom, node-forge, xpath
+// Requisitos: xml-crypto@1.5.3, @xmldom/xmldom, node-forge, xpath
 // Usa CERT_PATH y CERT_PASS del .env
 
 import fs from "fs";
@@ -28,10 +28,10 @@ function loadPkcs12(p12Path, passphrase = "") {
 
   for (const sc of p12.safeContents) {
     for (const sb of sc.safeBags) {
-      if (sb.type === forge.pki.oids.pkcs8ShroudedKeyBag || sb.type === forge.pki.oids.keyBag) {
+      if ((sb.type === forge.pki.oids.pkcs8ShroudedKeyBag || sb.type === forge.pki.oids.keyBag) && sb.key) {
         privateKeyPem = forge.pki.privateKeyToPem(sb.key);
       }
-      if (sb.type === forge.pki.oids.certBag) {
+      if (sb.type === forge.pki.oids.certBag && sb.cert) {
         certificatePem = forge.pki.certificateToPem(sb.cert);
       }
     }
@@ -47,19 +47,21 @@ function loadPkcs12(p12Path, passphrase = "") {
 }
 
 function stripSimulatedSignature(xml) {
+  // Elimina el placeholder (si existe)
   return xml.replace(/<\s*sum1:SimulatedSignature[^>]*>[\s\S]*?<\s*\/\s*sum1:SimulatedSignature\s*>/gi, "");
 }
 
 function ensureRegistroAltaHasId(doc) {
+  // Asegura atributo Id en <sum1:RegistroAlta>
   const regAlta = xpath.select("//*[local-name()='RegistroAlta']", doc)[0];
   if (!regAlta) throw new Error("No se encontró <sum1:RegistroAlta> en el XML");
   if (!regAlta.getAttribute("Id") && !regAlta.getAttribute("ID") && !regAlta.getAttribute("id")) {
     regAlta.setAttribute("Id", "RegistroAlta-1");
   }
-  return regAlta;
+  return regAlta.getAttribute("Id") || regAlta.getAttribute("ID") || regAlta.getAttribute("id");
 }
 
-function buildKeyInfo(certB64) {
+function keyInfoWithCert(certB64) {
   // <ds:KeyInfo> mínimo con el X509
   return `<X509Data><X509Certificate>${certB64}</X509Certificate></X509Data>`;
 }
@@ -76,8 +78,7 @@ export function signXmlWithXades(xmlUnsigned) {
 
   // 2) Asegurar Id en RegistroAlta
   const doc = new DOMParser().parseFromString(xmlClean, "text/xml");
-  const reg = ensureRegistroAltaHasId(doc);
-  const regId = reg.getAttribute("Id") || reg.getAttribute("ID") || reg.getAttribute("id");
+  const regId = ensureRegistroAltaHasId(doc);
   const xmlPrepared = new XMLSerializer().serializeToString(doc);
 
   // 3) Configurar firma XMLDSig (enveloped sobre RegistroAlta)
@@ -89,22 +90,23 @@ export function signXmlWithXades(xmlUnsigned) {
   });
 
   // KeyInfo con el certificado
-  sig.getKeyInfoContent = () => buildKeyInfo(certB64);
+  sig.getKeyInfoContent = () => keyInfoWithCert(certB64);
 
-  // Referencia: TODO el contenido de RegistroAlta (enveloped + c14n-excl), digest SHA-256
-  sig.addReference({
-    xpath: "//*[local-name(.)='RegistroAlta']",
-    transforms: [TR_ENVELOPED, C14N_EXC],
-    digestAlgorithm: DIGEST_SHA256,
-    // si quieres forzar el URI por Id:
-    uri: `#${regId}`,
-    id: "ref-obj-registro",
-  });
+  // 4) Referencia: TODO el contenido de RegistroAlta (enveloped + c14n-excl), digest SHA-256
+  //    ✅ Usamos la API clásica de xml-crypto 1.5.3 (primer parámetro = XPath STRING)
+  sig.addReference(
+    "//*[local-name()='RegistroAlta']",
+    [TR_ENVELOPED, C14N_EXC],
+    DIGEST_SHA256,
+    `#${regId}`,            // uri (coincide con el Id que acabamos de asegurar)
+    "ref-obj-registro"     // id de la referencia
+  );
 
-  // 4) Calcular e insertar <ds:Signature> dentro de RegistroAlta
+  // 5) Calcular e insertar <ds:Signature> dentro de RegistroAlta
   sig.computeSignature(xmlPrepared, {
     prefix: "ds",
-    location: { reference: "//*[local-name(.)='RegistroAlta']", action: "append" },
+    // ✅ XPath con local-name() SIN punto (evita el parse error)
+    location: { reference: "//*[local-name()='RegistroAlta']", action: "append" },
   });
 
   return sig.getSignedXml();
