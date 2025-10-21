@@ -1,4 +1,4 @@
-// src/services/aeatClient.js (ESM)
+// Cliente SOAP AEAT con certificado TLS mutuo (pfx)
 import https from "https";
 import axios from "axios";
 import fs from "fs";
@@ -9,17 +9,16 @@ const ENDPOINT = process.env.AEAT_ENDPOINT;
 const agent = new https.Agent({
   pfx: fs.readFileSync(path.resolve(process.env.CERT_PATH)),
   passphrase: process.env.CERT_PASS || "",
-  // Si tu cadena no está en el trust del sistema y sólo quieres probar, podrías poner false,
-  // pero en producción déjalo en true:
   rejectUnauthorized: true,
   keepAlive: true,
+  minVersion: "TLSv1.2",
+  maxVersion: "TLSv1.2",
 });
 
 export async function sendToAEAT(xmlBody) {
   const url = ENDPOINT;
   const headers = {
     "Content-Type": "text/xml; charset=utf-8",
-    // Operación de Alta para NO VERI*FACTU:
     "SOAPAction": "ValRegistroNoVF",
     "Accept": "text/xml",
     "User-Agent": "enviafacturas.es/1.0",

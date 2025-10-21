@@ -1,13 +1,14 @@
-// Construye el XML, firma y envía a AEAT.
-
+// Construye el XML, lo firma XAdES-EPES y lo envía a AEAT
 import { buildInvoiceXml } from "../services/xmlBuilder.js";
+import { signXmlWithXades } from "../services/xadesSigner.js";
 import { sendToAEAT } from "../services/aeatClient.js";
-import { signXmlWithXades } from "../services/xadesSigner.js"; 
 
 export async function sendInvoice(req, res) {
   try {
-    const { xml: unsignedXml, metadata } = await buildInvoiceXml(req.body, "");
+    // 1) Construir XML SOAP con datos y huella
+    const { xml: unsignedXml, metadata } = await buildInvoiceXml(req.body);
 
+    // 2) Firmar XAdES-EPES (dentro de sum1:RegistroAlta)
     let signedXml;
     try {
       signedXml = signXmlWithXades(unsignedXml);
@@ -20,6 +21,7 @@ export async function sendInvoice(req, res) {
       });
     }
 
+    // 3) Enviar a AEAT
     const aeat = await sendToAEAT(signedXml);
     const httpStatus = aeat.httpStatus || 200;
     const ok = httpStatus >= 200 && httpStatus < 300;
