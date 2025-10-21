@@ -46,9 +46,19 @@ function loadPkcs12(p12Path, passphrase = "") {
   return { privateKeyPem, certB64 };
 }
 
-function stripSimulatedSignature(xml) {
-  // Elimina el placeholder si existe
-  return xml.replace(/<\s*sum1:SimulatedSignature[^>]*>[\s\S]*?<\s*\/\s*sum1:SimulatedSignature\s*>/gi, "");
+// Elimina el placeholder y el comentario de marcador, y colapsa líneas vacías resultantes
+function stripPlaceholders(xml) {
+  let out = xml.replace(
+    /<\s*sum1:SimulatedSignature[^>]*>[\s\S]*?<\s*\/\s*sum1:SimulatedSignature\s*>/gi,
+    ""
+  );
+  out = out.replace(
+    /<!--\s*Marcador\s+que\s+será\s+reemplazado\s+por\s+<ds:Signature>\s*-->/gi,
+    ""
+  );
+  // Colapsar líneas en blanco repetidas
+  out = out.replace(/\n[ \t]*\n+/g, "\n");
+  return out;
 }
 
 function ensureRegistroAltaHasId(doc) {
@@ -72,22 +82,19 @@ export function signXmlWithXades(xmlUnsigned) {
 
   const { privateKeyPem, certB64 } = loadPkcs12(p12Path, p12Pass);
 
-  // 1) Quitar placeholder si existe
-  const xmlClean = stripSimulatedSignature(xmlUnsigned);
+  // 1) Limpiar placeholders (nodo simulado y comentario)
+  const xmlClean = stripPlaceholders(xmlUnsigned);
 
   // 2) Asegurar Id en RegistroAlta
   const doc = new DOMParser().parseFromString(xmlClean, "text/xml");
   const regId = ensureRegistroAltaHasId(doc);
   const xmlPrepared = new XMLSerializer().serializeToString(doc);
 
-  // 3) Configurar firma XMLDSig (enveloped sobre RegistroAlta)
-  const sig = new SignedXml({
-    signatureAlgorithm: SIG_RSA_SHA256,
-    canonicalizationAlgorithm: C14N_EXC,
-  });
-
-  // ✅ En xml-crypto@1.5.3 la clave se asigna así (no en el constructor)
-  sig.signingKey = privateKeyPem;
+  // 3) Configurar firma XMLDSig (en xml-crypto@1.5.3 se setean props en la instancia)
+  const sig = new SignedXml();
+  sig.signingKey = privateKeyPem;           // clave privada
+  sig.signatureAlgorithm = SIG_RSA_SHA256;  // forzar RSA-SHA256
+  sig.canonicalizationAlgorithm = C14N_EXC; // C14N exclusiva
 
   // KeyInfo con el certificado
   sig.keyInfoProvider = {
@@ -95,17 +102,16 @@ export function signXmlWithXades(xmlUnsigned) {
     getKey: () => null,
   };
 
-  // 4) Referencia: TODO el contenido de RegistroAlta (enveloped + c14n-excl), digest SHA-256
-  //    Usamos la API clásica: primer parámetro = XPath STRING
+  // 4) Referencia al nodo RegistroAlta (enveloped + c14n-excl), digest SHA-256
   sig.addReference(
     "//*[local-name()='RegistroAlta']",
     [TR_ENVELOPED, C14N_EXC],
     DIGEST_SHA256,
-    `#${regId}`,         // uri -> coincide con Id asegurado
-    "ref-obj-registro"  // id de referencia
+    `#${regId}`,
+    "ref-obj-registro"
   );
 
-  // 5) Calcular e insertar <ds:Signature> dentro de RegistroAlta
+  // 5) Firmar e insertar <ds:Signature> dentro de RegistroAlta
   sig.computeSignature(xmlPrepared, {
     prefix: "ds",
     location: { reference: "//*[local-name()='RegistroAlta']", action: "append" },
