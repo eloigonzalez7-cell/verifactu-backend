@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:sum="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroLR.xsd"
-                  xmlns:sum1="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd">
+<soapenv:Envelope
+  xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+  xmlns:sum="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroLR.xsd"
+  xmlns:sum1="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd">
   <soapenv:Header/>
   <soapenv:Body>
     <sum:RegFactuSistemaFacturacion>
@@ -12,7 +13,7 @@
         </sum1:ObligadoEmision>
       </sum:Cabecera>
       <sum:RegistroFactura>
-        <sum1:RegistroAlta>
+        <sum1:RegistroAlta Id="RegistroAlta-1">
           <sum1:IDVersion>1.0</sum1:IDVersion>
           <sum1:IDFactura>
             <sum1:IDEmisorFactura>{{EMISOR_NIF}}</sum1:IDEmisorFactura>
@@ -53,8 +54,6 @@
           <sum1:FechaHoraHusoGenRegistro>{{TIMESTAMP}}</sum1:FechaHoraHusoGenRegistro>
           <sum1:TipoHuella>01</sum1:TipoHuella>
           <sum1:Huella>{{HUELLA}}</sum1:Huella>
-          <!-- Marcador que será reemplazado por <ds:Signature> -->
-          <sum1:SimulatedSignature>{{SIGNATURE}}</sum1:SimulatedSignature>
         </sum1:RegistroAlta>
       </sum:RegistroFactura>
     </sum:RegFactuSistemaFacturacion>
